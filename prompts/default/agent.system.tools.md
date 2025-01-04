@@ -1,5 +1,7 @@
 ## Tools available:
 
+{{ include './agent.system.tool.ordering.md' }}
+
 {{ include './agent.system.tool.response.md' }}
 
 {{ include './agent.system.tool.call_sub.md' }}

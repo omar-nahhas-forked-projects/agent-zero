@@ -35,5 +35,5 @@
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "updateRemoteUserUID": false,
   "containerUser": "root",
-  "postCreateCommand": "pip install -r requirements.txt"
+  "postCreateCommand": "source /opt/conda/etc/profile.d/conda.sh && conda activate base && pip install -r requirements.txt"
 }
