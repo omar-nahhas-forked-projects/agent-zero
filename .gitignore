@@ -3,6 +3,7 @@
 **/.env
 **/__pycache__/
 **/.conda/
+**/venv/
 
 # Ignore git internal files (for bundler)
 .git/
@@ -40,6 +41,9 @@ instruments/**
 # Explicitly allow the default folder in instruments
 !instruments/default/
 !instruments/default/**
+# Explicitly allow the custom folder in instruments
+!instruments/custom/
+!instruments/custom/**
 
 # Global rule to include .gitkeep files anywhere
 !**/.gitkeep

@@ -15,7 +15,12 @@ RUN apt-get update && apt-get install -y \
     sudo \
     curl \
     wget \
-    git
+    git \
+    bash \
+    bash-builtins
+
+# Set bash as the default shell
+SHELL ["/bin/bash", "-c"]
 
 # Cleanup package list
 RUN rm -rf /var/lib/apt/lists/*
@@ -49,5 +54,3 @@ EXPOSE 22
 
 # Init .bashrc
 CMD ["/usr/local/bin/initialize.sh"]
-
-
