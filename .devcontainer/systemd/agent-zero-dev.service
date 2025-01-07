@@ -1,0 +1,14 @@
+[Unit]
+Description=Agent Zero Development Container
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+Environment="WORKSPACE_DIR=/home/omar/src/github.com/omar-nahhas-forked-projects/agent-zero"
+ExecStart=/home/omar/src/github.com/omar-nahhas-forked-projects/agent-zero/.devcontainer/systemd/start-dev-container.sh
+ExecStop=/usr/bin/docker stop agent-zero-dev
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

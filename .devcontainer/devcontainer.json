@@ -1,9 +1,17 @@
 {
   "name": "Agent Zero Development",
+  "containerName": "agent-zero-dev",
   "build": {
     "dockerfile": "Dockerfile",
-    "context": "."
+    "context": ".",
+    "args": {
+      "ENABLE_GPU": "${localEnv:ENABLE_GPU:false}",
+      "CUDA_VERSION": "${localEnv:CUDA_VERSION:12.1}",
+      "FAISS_VERSION": "${localEnv:FAISS_VERSION:1.9.0}"
+    }
   },
+  // Add GPU runtime arguments conditionally
+  "runArgs": ["--gpus", "all"],
   "customizations": {
     "vscode": {
       "extensions": [
@@ -35,5 +43,6 @@
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "updateRemoteUserUID": false,
   "containerUser": "root",
-  "postCreateCommand": "source /opt/conda/etc/profile.d/conda.sh && conda activate base && pip install -r requirements.txt"
+  // Update postCreateCommand to source setup.sh
+  "postCreateCommand": "chmod +x .devcontainer/setup.sh && .devcontainer/setup.sh && source /opt/conda/etc/profile.d/conda.sh && conda activate base && pip install -r requirements.txt"
 }

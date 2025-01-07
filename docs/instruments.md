@@ -29,6 +29,32 @@ Instruments are organized in the `/instruments` directory, and are categorized i
 
 ---
 
+#### **Directory Structure and Override Mechanism:**
+Instruments use a fixed two-tier directory structure:
+1. **/default**: Contains built-in instruments provided by the framework
+2. **/custom**: Directory for user-added custom instruments
+
+Unlike the prompt system, the instruments directory structure:
+- Is not configurable at runtime
+- Always uses these fixed directories
+- Cannot be extended with additional directories
+- Uses a simple default/custom override where custom takes precedence
+
+This fixed structure ensures:
+- Consistent organization of instruments
+- Clear separation between built-in and custom instruments
+- Simple override mechanism without configuration complexity
+
+---
+
+#### **Using Custom Instruments:**
+To override or add new instruments:
+1. Create your instrument in `/instruments/custom/`
+2. If an instrument with the same name exists in `/instruments/default/`, your custom version will take precedence
+3. If no default version exists, your custom instrument will be added to the available instruments
+
+---
+
 #### **Example Use Case:**
 For example, consider the **yt_download** instrument:
 - **Problem it solves**: Downloading YouTube videos.

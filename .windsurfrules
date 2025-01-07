@@ -1,0 +1,8 @@
+-TDD driven development
+-Acceptance tests before unit tests if unit tests does not exist
+-Proposed your changes to the users before implementing
+-Propose small changes, user context is small
+-Do not generate code until approach is decided
+-When generating code one snipped at a time
+-Always generate code comments, dont assume familiarity with the library or language idioms
+-Update documentation as needed for each change
