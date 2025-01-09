@@ -8,6 +8,11 @@ def initialize():
 
     current_settings = settings.get_settings()
 
+    # Initialize zero agent if it doesn't exist
+    from python.helpers.agent_manager import AgentManager
+    if not AgentManager.agent_exists("zero"):
+        AgentManager.create_agent("zero")
+
     # chat model from user settings
     chat_llm = ModelConfig(
         provider=models.ModelProvider[current_settings["chat_model_provider"]],

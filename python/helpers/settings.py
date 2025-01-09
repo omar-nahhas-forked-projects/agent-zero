@@ -40,6 +40,7 @@ class Settings(TypedDict):
     agent_prompts_subdir: str
     agent_memory_subdir: str
     agent_knowledge_subdir: str
+    agent_current_name: str  # Name of the currently selected agent
 
     api_keys: dict[str, str]
 
@@ -413,23 +414,13 @@ def convert_out(settings: Settings) -> SettingsOutput:
     # api keys model section
     api_keys_fields: list[SettingsField] = []
     api_keys_fields.append(_get_api_key_field(settings, "openai", "OpenAI API Key"))
-    api_keys_fields.append(
-        _get_api_key_field(settings, "anthropic", "Anthropic API Key")
-    )
+    api_keys_fields.append(_get_api_key_field(settings, "anthropic", "Anthropic API Key"))
     api_keys_fields.append(_get_api_key_field(settings, "groq", "Groq API Key"))
     api_keys_fields.append(_get_api_key_field(settings, "google", "Google API Key"))
-    api_keys_fields.append(
-        _get_api_key_field(settings, "openrouter", "OpenRouter API Key")
-    )
-    api_keys_fields.append(
-        _get_api_key_field(settings, "sambanova", "Sambanova API Key")
-    )
-    api_keys_fields.append(
-        _get_api_key_field(settings, "mistralai", "MistralAI API Key")
-    )
-    api_keys_fields.append(
-        _get_api_key_field(settings, "huggingface", "HuggingFace API Key")
-    )
+    api_keys_fields.append(_get_api_key_field(settings, "openrouter", "OpenRouter API Key"))
+    api_keys_fields.append(_get_api_key_field(settings, "sambanova", "Sambanova API Key"))
+    api_keys_fields.append(_get_api_key_field(settings, "mistralai", "MistralAI API Key"))
+    api_keys_fields.append(_get_api_key_field(settings, "huggingface", "HuggingFace API Key"))
 
     api_keys_section: SettingsSection = {
         "title": "API Keys",
@@ -470,7 +461,7 @@ def convert_out(settings: Settings) -> SettingsOutput:
 
     agent_fields.append(
         {
-            "id": "agent_knowledge_subdirs",
+            "id": "agent_knowledge_subdir",
             "title": "Knowledge subdirectory",
             "description": "Subdirectory of /knowledge folder to use for agent knowledge import. 'default' subfolder is always imported and contains framework knowledge.",
             "type": "select",
@@ -479,6 +470,16 @@ def convert_out(settings: Settings) -> SettingsOutput:
                 {"value": subdir, "label": subdir}
                 for subdir in files.get_subdirectories("knowledge", exclude="default")
             ],
+        }
+    )
+
+    agent_fields.append(
+        {
+            "id": "agent_current_name",
+            "title": "Current Agent Name",
+            "description": "Name of the currently selected agent",
+            "type": "text",
+            "value": settings["agent_current_name"],
         }
     )
 
@@ -803,6 +804,7 @@ def get_default_settings() -> Settings:
         agent_prompts_subdir="default",
         agent_memory_subdir="default",
         agent_knowledge_subdir="custom",
+        agent_current_name="zero",  # Set zero as default agent
         rfc_auto_docker=True,
         rfc_url="localhost",
         rfc_password="",

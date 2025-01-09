@@ -151,6 +151,7 @@ class AgentConfig:
     chat_model: ModelConfig
     utility_model: ModelConfig
     embeddings_model: ModelConfig
+    agent_current_name: str = ""  # Current agent name
     prompts_subdir: str = ""
     memory_subdir: str = ""
     knowledge_subdirs: list[str] = field(default_factory=lambda: ["default", "custom"])
@@ -218,16 +219,22 @@ class Agent:
     def __init__(
         self, number: int, config: AgentConfig, context: AgentContext | None = None
     ):
-
         # agent config
         self.config = config
+
+        # If agent has a current name, update paths
+        if hasattr(config, "agent_current_name") and config.agent_current_name:
+            from instruments.default.agent_manager.agent_manager import AgentManager
+            agent_dir = AgentManager.get_agent_dir(config.agent_current_name)
+            config.memory_subdir = os.path.join(agent_dir, "memory")
+            config.knowledge_subdirs = [os.path.join(agent_dir, "knowledge")]
 
         # agent context
         self.context = context or AgentContext(config)
 
         # non-config vars
         self.number = number
-        self.agent_name = f"Agent {self.number}"
+        self.agent_name = config.agent_current_name or f"Agent {self.number}"
 
         self.history = history.History(self)
         self.last_user_message: history.Message | None = None

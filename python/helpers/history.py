@@ -76,7 +76,13 @@ class Message(Record):
         return False
 
     def output(self):
-        return [OutputMessage(ai=self.ai, content=self.summary or self.content)]
+        if self.summary:
+            # If we have a summary, return both the original message and its summary
+            return [
+                OutputMessage(ai=self.ai, content=self.content),
+                OutputMessage(ai=self.ai, content=self.summary)
+            ]
+        return [OutputMessage(ai=self.ai, content=self.content)]
 
     def output_langchain(self):
         return output_langchain(self.output())
@@ -114,7 +120,13 @@ class Topic(Record):
         if self.summary:
             return [OutputMessage(ai=False, content=self.summary)]
         else:
-            msgs = [m for r in self.messages for m in r.output()]
+            # If any message has a summary, use that instead of the message content
+            msgs = []
+            for msg in self.messages:
+                if msg.summary:
+                    msgs.extend([OutputMessage(ai=False, content=msg.summary)])
+                else:
+                    msgs.extend(msg.output())
             return group_outputs_abab(msgs)
 
     async def summarize(self):
@@ -342,14 +354,19 @@ class History(Record):
 
     async def compress_topics(self) -> bool:
         # summarize topics one by one
+        summarized = False
         for topic in self.topics:
             if not topic.summary:
                 await topic.summarize()
-                return True
+                summarized = True
+        
+        if summarized:
+            return True
 
-        # move oldest topic to bulks and summarize
-        for topic in self.topics:
+        # If all topics are summarized, move oldest topic to bulks
+        if self.topics:
             bulk = Bulk(history=self)
+            topic = self.topics[0]  # Get oldest topic
             bulk.records.append(topic)
             if topic.summary:
                 bulk.summary = topic.summary
@@ -357,7 +374,9 @@ class History(Record):
                 await bulk.summarize()
             self.bulks.append(bulk)
             self.topics.remove(topic)
-        return True
+            return True
+            
+        return False
 
     async def compress_bulks(self):
         # merge bulks if possible

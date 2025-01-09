@@ -27,4 +27,6 @@ tiktoken==0.8.0
 unstructured==0.15.13
 unstructured-client==0.25.9
 webcolors==24.6.0
-torch==2.2.0  # Already installed with CUDA support
+torch==2.2.0
+#torch==2.2.0+cu121  # Installing with CUDA 12.1 support
+pytest-cov ## For development
