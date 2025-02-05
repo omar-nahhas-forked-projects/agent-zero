@@ -6,3 +6,26 @@
 -When generating code one snipped at a time
 -Always generate code comments, dont assume familiarity with the library or language idioms
 -Update documentation as needed for each change
+-After dong research on the code, before implenting, update documenation with the new learnings
+-When running python command alwasy use the conda environment,called agent-zero
+-After modifying a test alwasy run it again
+-To speed things upAllways add extra debugging statements in the tests you are working on, after the test pass, remove the excessive debugging statements
+- When writing tests to increase coverage of existing code, neven modify the code that is being tested, instead create bug reports and adapt the tests to existing code
+- When writing tests to increase coverage of existing code, you are only allow to add tempral debug statemetns to that code
+- Instrospect the code we are testing using reflection if that helps to debug
+
+
+
+## Workflow Prompts
+
+### Progress Recording Prompt
+```
+At the end of every completed step, please record your work in @progress.md. Write down the implemented features, encountered errors and how we were able to fix all of those. Always answer these three questions, don't skip anything and be as precise and comprehensive as possible.
+```
+
+### Session End Recording Prompt
+```
+At the end of the session, record your work log in @project-status.md. First, check @progress.md to understand all features we have implemented. Then write a detailed session report which should provide detailed context for the next work session.
+```
+
+

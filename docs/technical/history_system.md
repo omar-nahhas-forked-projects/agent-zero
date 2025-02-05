@@ -296,6 +296,32 @@ When messages exceed token limits, they are compressed through two mechanisms:
 
 This approach ensures efficient context use while preserving message readability and semantic meaning.
 
+## Message Compression Strategy
+
+The History System uses an incremental compression strategy:
+
+1. **Single Message Compression**
+   - `compress_large_messages()` processes one message at a time
+   - Returns after compressing the largest message that exceeds the limit
+   - This incremental approach prevents over-compression
+   - Allows system to evaluate impact after each compression
+
+2. **Compression Thresholds**
+   - Messages are compressed if they exceed `LARGE_MESSAGE_TO_TOPIC_RATIO` (10%) of topic allocation
+   - Compression preserves message readability by keeping start and end portions
+   - Uses `[...N...]` placeholder where N is the number of removed characters
+
+3. **Multiple Compression Cycles**
+   - If history remains over limit after one compression
+   - Next `compress()` call will handle another message
+   - This cycle continues until under limit or no more messages to compress
+   - Ensures gradual compression with minimal information loss
+
+This design prioritizes:
+- Minimal information loss (compress only what's necessary)
+- Message readability (preserve start/end of messages)
+- System stability (prevent over-compression)
+
 ## Configuration
 
 ### LLM Integration
