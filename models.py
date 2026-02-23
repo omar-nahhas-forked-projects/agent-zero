@@ -602,7 +602,7 @@ class LiteLLMEmbeddingWrapper(Embeddings):
         model_config: Optional[ModelConfig] = None,
         **kwargs: Any,
     ):
-        self.model_name = f"{provider}/{model}" if provider != "openai" else model
+        self.model_name = f"{provider}/{model}"
         self.kwargs = kwargs
         self.a0_model_conf = model_config
 
