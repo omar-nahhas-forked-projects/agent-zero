@@ -26,9 +26,9 @@ class EventLoopThread:
             return cls._instances[thread_name]
 
     def _start(self):
-        if not hasattr(self, "loop") or not self.loop:
+        if not hasattr(self, "loop") or not self.loop or self.loop.is_closed():
             self.loop = asyncio.new_event_loop()
-        if not hasattr(self, "thread") or not self.thread:
+        if not hasattr(self, "thread") or not self.thread or not self.thread.is_alive():
             self.thread = threading.Thread(
                 target=self._run_event_loop, daemon=True, name=self.thread_name
             )
