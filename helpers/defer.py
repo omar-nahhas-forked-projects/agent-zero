@@ -28,17 +28,36 @@ class EventLoopThread:
     def _start(self):
         if not hasattr(self, "loop") or not self.loop or self.loop.is_closed():
             self.loop = asyncio.new_event_loop()
+            self.loop.set_exception_handler(self._handle_loop_exception)
         if not hasattr(self, "thread") or not self.thread or not self.thread.is_alive():
             self.thread = threading.Thread(
                 target=self._run_event_loop, daemon=True, name=self.thread_name
             )
             self.thread.start()
 
+    @staticmethod
+    def _handle_loop_exception(loop, context):
+        from python.helpers.print_style import PrintStyle
+        exception = context.get('exception')
+        message = context.get('message', 'No message')
+        if exception:
+            PrintStyle.error(f"EventLoopThread unhandled exception: {exception}\nContext: {message}")
+        else:
+            PrintStyle.error(f"EventLoopThread error: {message}")
+
     def _run_event_loop(self):
         if not self.loop:
             raise RuntimeError("Event loop is not initialized")
         asyncio.set_event_loop(self.loop)
-        self.loop.run_forever()
+        while True:
+            try:
+                self.loop.run_forever()
+                break  # Normal exit via loop.stop()
+            except Exception as e:
+                from python.helpers.print_style import PrintStyle
+                PrintStyle.error(f"EventLoopThread '{self.thread_name}' crashed: {e}")
+                if self.loop.is_closed():
+                    break  # Can't recover a closed loop
 
     def terminate(self):
         loop = getattr(self, "loop", None)

@@ -9,7 +9,7 @@ class RemoveChat(ApiHandler):
         ctxid = input.get("context", "")
 
         scheduler = TaskScheduler.get()
-        scheduler.cancel_tasks_by_context(ctxid, terminate_thread=True)
+        scheduler.cancel_tasks_by_context(ctxid, terminate_thread=False)
 
         context = AgentContext.use(ctxid)
         if context:

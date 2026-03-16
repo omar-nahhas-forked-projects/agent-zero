@@ -10,7 +10,7 @@ class Reset(ApiHandler):
         ctxid = input.get("context", "")
 
         # attempt to stop any scheduler tasks bound to this context
-        TaskScheduler.get().cancel_tasks_by_context(ctxid, terminate_thread=True)
+        TaskScheduler.get().cancel_tasks_by_context(ctxid, terminate_thread=False)
 
         # context instance - get or create
         context = self.use_context(ctxid)
