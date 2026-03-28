@@ -1,0 +1,57 @@
+# Non-root variant of the upstream Agent Zero Dockerfile
+FROM agent0ai/agent-zero-base:latest
+
+# Check if the argument is provided, else throw an error  
+ARG BRANCH
+RUN if [ -z "$BRANCH" ]; then echo "ERROR: BRANCH is not set!" >&2; exit 1; fi
+ENV BRANCH=$BRANCH
+
+# ─── Non-root user setup ─────────────────────────────────────────────
+RUN groupadd -r agent && useradd -r -g agent -m -d /home/agent -s /bin/bash agent
+
+ARG SUPERCRONIC_VERSION=v0.2.33
+RUN curl -fsSL "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-amd64" \
+    -o /usr/local/bin/supercronic && chmod +x /usr/local/bin/supercronic
+RUN touch /etc/cron.d/agent-crontab && chmod 644 /etc/cron.d/agent-crontab
+
+RUN apt-get update && apt-get install -y --no-install-recommends sudo && \
+    echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/apt" \
+    > /etc/sudoers.d/agent-apt && chmod 0440 /etc/sudoers.d/agent-apt && \
+    rm -rf /var/lib/apt/lists/*
+# ─────────────────────────────────────────────────────────────────────
+
+# Copy filesystem files to root
+COPY ./fs/ /
+
+# pre installation steps
+RUN bash /ins/pre_install.sh $BRANCH
+
+# install A0
+RUN bash /ins/install_A0.sh $BRANCH
+
+# install additional software
+RUN bash /ins/install_additional.sh $BRANCH
+
+# cleanup repo and install A0 without caching, this speeds up builds
+ARG CACHE_DATE=none
+RUN echo "cache buster $CACHE_DATE" && bash /ins/install_A02.sh $BRANCH
+
+# post installation steps
+RUN bash /ins/post_install.sh $BRANCH
+
+# ─── Fix ownership for non-root ──────────────────────────────────────
+RUN chown -R agent:agent /a0 /git/agent-zero /opt/venv-a0 /home/agent && \
+    chown -R agent:agent /usr/local/searxng 2>/dev/null || true && \
+    chown -R agent:agent /etc/searxng 2>/dev/null || true && \
+    chown -R agent:agent /etc/supervisor 2>/dev/null || true && \
+    mkdir -p /tmp/supervisord && chown agent:agent /tmp/supervisord
+# ─────────────────────────────────────────────────────────────────────
+
+EXPOSE 8080 9000-9009
+
+RUN chmod +x /exe/initialize.sh /exe/run_A0.sh /exe/run_searxng.sh /exe/run_tunnel_api.sh
+
+USER agent
+WORKDIR /home/agent
+
+CMD ["/exe/initialize.sh", "$BRANCH"]
