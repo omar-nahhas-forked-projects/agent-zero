@@ -661,6 +661,10 @@ def get_runtime_config(set: Settings):
 
 
 def create_auth_token() -> str:
+    # Allow explicit override via environment variable
+    override = os.environ.get("A0_MCP_SERVER_TOKEN", "").strip()
+    if override:
+        return override
     runtime_id = runtime.get_persistent_id()
     username = dotenv.get_dotenv_value(dotenv.KEY_AUTH_LOGIN) or ""
     password = dotenv.get_dotenv_value(dotenv.KEY_AUTH_PASSWORD) or ""
