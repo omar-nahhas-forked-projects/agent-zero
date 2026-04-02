@@ -645,11 +645,23 @@ def _dict_to_env(data_dict):
 def set_root_password(password: str):
     if not runtime.is_dockerized():
         raise Exception("root password can only be set in dockerized environments")
-    _result = subprocess.run(
-        ["chpasswd"],
-        input=f"root:{password}".encode(),
-        capture_output=True,
-        check=True,
+    for cmd in (["sudo", "chpasswd"], ["chpasswd"]):
+        try:
+            subprocess.run(
+                cmd,
+                input=f"root:{password}".encode(),
+                capture_output=True,
+                check=True,
+            )
+            dotenv.save_dotenv_value(dotenv.KEY_ROOT_PASSWORD, password)
+            return
+        except FileNotFoundError:
+            continue
+        except subprocess.CalledProcessError:
+            continue
+
+    PrintStyle.warning(
+        "Could not apply root password with chpasswd; saved it to .env only."
     )
     dotenv.save_dotenv_value(dotenv.KEY_ROOT_PASSWORD, password)
 

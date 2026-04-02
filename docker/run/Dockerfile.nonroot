@@ -15,7 +15,7 @@ RUN curl -fsSL "https://github.com/aptible/supercronic/releases/download/${SUPER
 RUN touch /etc/cron.d/agent-crontab && chmod 644 /etc/cron.d/agent-crontab
 
 RUN apt-get update && apt-get install -y --no-install-recommends sudo && \
-    echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/apt" \
+    echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/apt, /usr/sbin/chpasswd" \
     > /etc/sudoers.d/agent-apt && chmod 0440 /etc/sudoers.d/agent-apt && \
     rm -rf /var/lib/apt/lists/*
 # ─────────────────────────────────────────────────────────────────────
