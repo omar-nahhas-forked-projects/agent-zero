@@ -17,15 +17,13 @@ fi
 # Set up shell profile
 touch "$HOME/.bashrc" "$HOME/.profile" 2>/dev/null || true
 
-# update package list in background (via sudo)
-sudo apt-get update > /dev/null 2>&1 &
+# update package list (must complete before init hooks that install packages)
+sudo apt-get update > /dev/null 2>&1
 
 # ─── Init hooks: run /opt/init-*.sh on every container start ─────────
 # Mount custom init scripts via docker-compose volumes to /opt/init-*.sh
-# They run on every container start, useful for:
-#   - Restoring SSH/GPG keys from secrets
-#   - Installing runtime dependencies
-#   - Any setup that must survive container recreation
+# They run alphabetically on every container start.
+# Use naming to control order (e.g. gpg < model < packages < repos < secrets < ssh).
 for hook in /opt/init-*.sh; do
     [ -e "$hook" ] || continue
     echo "Running init hook: $hook"
@@ -33,5 +31,15 @@ for hook in /opt/init-*.sh; do
 done
 # ─────────────────────────────────────────────────────────────────────
 
-# let supervisord handle the services
-exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
+# ─── Launch supervisord ──────────────────────────────────────────────
+# If an entrypoint wrapper is mounted, delegate to it so the operator
+# can wrap the main process (e.g. direnv, env injection, tracing)
+# without rebuilding the image.  Otherwise run supervisord directly.
+SUPERVISORD_CMD="/usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf"
+
+if [ -x /opt/entrypoint-wrapper.sh ]; then
+    echo "Delegating to entrypoint wrapper..."
+    exec /opt/entrypoint-wrapper.sh $SUPERVISORD_CMD
+else
+    exec $SUPERVISORD_CMD
+fi

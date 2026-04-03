@@ -1,9 +1,11 @@
-# Non-root variant of the upstream Agent Zero Dockerfile
+# Non-root Agent Zero Dockerfile
+# Build context: repo root (agent-zero/)
+# Usage: docker build -f docker/run/Dockerfile.nonroot -t agent-zero:tag .
 FROM agent0ai/agent-zero-base:latest
 
-# Check if the argument is provided, else throw an error  
-ARG BRANCH
-RUN if [ -z "$BRANCH" ]; then echo "ERROR: BRANCH is not set!" >&2; exit 1; fi
+# BRANCH=local means source is already COPY'd in; any other value triggers
+# a git clone inside install_A0.sh (upstream behaviour, kept for compat).
+ARG BRANCH=local
 ENV BRANCH=$BRANCH
 
 # ─── Non-root user setup ─────────────────────────────────────────────
@@ -14,14 +16,21 @@ RUN curl -fsSL "https://github.com/aptible/supercronic/releases/download/${SUPER
     -o /usr/local/bin/supercronic && chmod +x /usr/local/bin/supercronic
 RUN touch /etc/cron.d/agent-crontab && chmod 644 /etc/cron.d/agent-crontab
 
-RUN apt-get update && apt-get install -y --no-install-recommends sudo && \
-    echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/apt, /usr/sbin/chpasswd" \
+ARG YQ_VERSION=v4.44.6
+RUN curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
+    -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq
+
+RUN apt-get update && apt-get install -y --no-install-recommends sudo jq direnv pass && \
+    echo "agent ALL=(ALL) NOPASSWD: ALL" \
     > /etc/sudoers.d/agent-apt && chmod 0440 /etc/sudoers.d/agent-apt && \
     rm -rf /var/lib/apt/lists/*
 # ─────────────────────────────────────────────────────────────────────
 
-# Copy filesystem files to root
-COPY ./fs/ /
+# Copy filesystem overlay (scripts, supervisor config, etc.)
+COPY ./docker/run/fs/ /
+
+# Copy source code (used when BRANCH=local; ignored by install_A0.sh otherwise)
+COPY ./ /git/agent-zero
 
 # pre installation steps
 RUN bash /ins/pre_install.sh $BRANCH
@@ -47,7 +56,7 @@ RUN chown -R agent:agent /a0 /git/agent-zero /opt/venv-a0 /home/agent && \
     mkdir -p /tmp/supervisord && chown agent:agent /tmp/supervisord
 # ─────────────────────────────────────────────────────────────────────
 
-EXPOSE 8080 9000-9009
+EXPOSE 80 9000-9009
 
 RUN chmod +x /exe/initialize.sh /exe/run_A0.sh /exe/run_searxng.sh /exe/run_tunnel_api.sh
 
