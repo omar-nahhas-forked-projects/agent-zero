@@ -1,9 +1,11 @@
 from abc import abstractmethod
+from collections import defaultdict
 from typing import Any, Awaitable, Type, cast
 from helpers import modules, files
 from helpers import cache
 from typing import TYPE_CHECKING
 from functools import wraps
+import asyncio
 import inspect
 import os
 
@@ -18,6 +20,10 @@ USER_EXTENSIONS_FOLDER = "usr/extensions"
 
 _EXTENSIONS_CACHE_AREA = "extension_folder_classes(extensions)"
 _CLASSES_CACHE_AREA = "extension_classes(extensions)"
+# computed execution plans (stages + deferred) per (agent, extension_point)
+_PLANS_CACHE_AREA = "extension_plans(extensions)"
+# key under agent.data holding the current turn's deferred extension tasks
+_DEFERRED_TASKS_KEY = "_deferred_ext_tasks"
 # cache.toggle_area(_EXTENSIONS_CACHE_AREA, False)
 # cache.toggle_area(_CLASSES_CACHE_AREA, False)
 
@@ -211,6 +217,23 @@ def extensible(func):
 
 class Extension:
 
+    # --- scheduling contract (all optional; defaults = legacy behavior) ---
+    # blocking=True: the dispatch awaits this extension before returning.
+    # blocking=False: pure side-effect; scheduled as a background task and
+    #   joined at the turn barrier (message_loop_end). Errors are logged, not raised.
+    blocking: bool = True
+    # parallel=False: legacy semantics — depends on all prior extensions in the
+    #   point (filename order), never reordered.
+    # parallel=True: no ordering dependency on sibling extensions; may run
+    #   concurrently with other parallel siblings. Only safe when this
+    #   extension's side-effects are commutative with those siblings
+    #   (e.g. writes a distinct key; never appends to a shared ordered list).
+    #   Prior NON-parallel siblings still act as barriers.
+    parallel: bool = False
+    # explicit ordering edges on named sibling extensions (module basenames,
+    #   e.g. ("_10_main_prompt",)). Overrides the parallel/legacy default deps.
+    after: tuple[str, ...] = ()
+
     def __init__(self, agent: "Agent|None", **kwargs):
         self.agent: "Agent|None" = agent
         self.kwargs = kwargs
@@ -220,19 +243,223 @@ class Extension:
         pass
 
 
+class _ListSlotMarker(str):
+    """Placeholder reserving a position in a shared ordered list (str subclass
+    so an unfilled marker degrades harmlessly on join)."""
+
+    __slots__ = ()
+
+
+class ListSlot:
+    """A reserved position in a shared ordered list.
+
+    Parallel extensions that contribute to a shared ordered list (e.g. the
+    system prompt sections) must reserve their position *synchronously* —
+    before their first await — so the final order stays deterministic
+    (reservation order == filename order, since the scheduler starts stage
+    coroutines in filename order). After the slow work completes, call
+    set(text) to fill the slot, or set("")/drop() to remove it.
+    """
+
+    def __init__(self, target: list):
+        self._target = target
+        self._marker = _ListSlotMarker()
+        target.append(self._marker)
+
+    def set(self, text: str):
+        for i, item in enumerate(self._target):
+            if item is self._marker:
+                if text:
+                    self._target[i] = text
+                else:
+                    del self._target[i]
+                return
+        # marker already finalized/removed; append non-empty text as fallback
+        if text:
+            self._target.append(text)
+
+    def drop(self):
+        self.set("")
+
+
+def reserve_list_slot(target: list) -> ListSlot:
+    """Reserve the next position in a shared ordered list (sync; see ListSlot)."""
+    return ListSlot(target)
+
+
+def finalize_list_slots(target: list):
+    """Remove any unfilled slot markers (e.g. left by a crashed extension)."""
+    target[:] = [item for item in target if not isinstance(item, _ListSlotMarker)]
+
+
+class ExecutionPlan:
+    """Precomputed execution plan for one extension point.
+
+    stages: blocking extensions grouped into dependency levels; extensions in
+        the same stage are mutually independent and run concurrently; stages
+        run in order. Legacy (undeclared) extensions each form their own stage
+        in filename order — identical to the historical serial behavior.
+    deferred: non-blocking extensions, scheduled as background tasks and joined
+        at the turn barrier.
+    """
+
+    def __init__(
+        self,
+        stages: list[list[Type[Extension]]],
+        deferred: list[Type[Extension]],
+    ):
+        self.stages = stages
+        self.deferred = deferred
+
+
+def build_execution_plan(classes: list[Type[Extension]]) -> ExecutionPlan:
+    """Build the (stages, deferred) plan from an ordered extension class list.
+
+    Pure in the class list (filename-sorted, as _get_extension_classes returns),
+    so results are cacheable until the extension folders change.
+    """
+    blocking = [cls for cls in classes if getattr(cls, "blocking", True)]
+    deferred = [cls for cls in classes if not getattr(cls, "blocking", True)]
+
+    names = [_get_file_from_module(cls.__module__) for cls in blocking]
+    index_of = {name: i for i, name in enumerate(names)}
+
+    # dependency edges: deps[i] = set of blocking indices i depends on
+    deps: list[set[int]] = []
+    for i, cls in enumerate(blocking):
+        after = tuple(getattr(cls, "after", ()) or ())
+        if after:
+            dep_set = set()
+            for name in after:
+                j = index_of.get(name)
+                if j is None:
+                    PrintStyle.warning(
+                        f"Extension {names[i]} declares after={name!r} which is not present; ignoring"
+                    )
+                elif j == i:
+                    PrintStyle.warning(
+                        f"Extension {names[i]} declares after itself; ignoring"
+                    )
+                else:
+                    dep_set.add(j)
+            deps.append(dep_set)
+        elif getattr(cls, "parallel", False):
+            # parallel: only prior NON-parallel extensions act as barriers
+            deps.append(
+                {
+                    j
+                    for j in range(i)
+                    if not getattr(blocking[j], "parallel", False)
+                }
+            )
+        else:
+            # legacy: depends on everything before it (strict filename order)
+            deps.append(set(range(i)))
+
+    # longest-path level per node (Kahn); cycle fallback = serial legacy order
+    levels = [0] * len(blocking)
+    resolved: set[int] = set()
+    remaining = set(range(len(blocking)))
+    while remaining:
+        ready = [i for i in remaining if deps[i] <= resolved]
+        if not ready:
+            PrintStyle.warning(
+                "Extension dependency cycle detected "
+                f"({[names[i] for i in sorted(remaining)]}); falling back to serial order"
+            )
+            return ExecutionPlan(stages=[[cls] for cls in blocking], deferred=deferred)
+        for i in ready:
+            levels[i] = max((levels[j] + 1 for j in deps[i]), default=0)
+        resolved |= set(ready)
+        remaining -= set(ready)
+
+    stage_map: dict[int, list[Type[Extension]]] = defaultdict(list)
+    for i, cls in enumerate(blocking):
+        stage_map[levels[i]].append(cls)  # filename order preserved within stage
+    stages = [stage_map[level] for level in sorted(stage_map)]
+
+    return ExecutionPlan(stages=stages, deferred=deferred)
+
+
 async def call_extensions_async(
     extension_point: str, agent: "Agent|None" = None, **kwargs
 ):
     _log_extension_call(extension_point)
 
-    # fetch classes for this extension point and agent
+    # fetch classes and the precomputed execution plan for this point
     classes = _get_extension_classes(extension_point, agent=agent, **kwargs)
+    plan = _get_execution_plan(extension_point, classes, agent=agent)
 
-    # execute unique extensions
-    for cls in classes:
+    # blocking extensions: stage by stage; one stage's extensions run
+    # concurrently (they are mutually independent), stages run in order.
+    for stage in plan.stages:
+        if len(stage) == 1:
+            # single extension — identical to the legacy serial path
+            result = stage[0](agent=agent).execute(**kwargs)
+            if isinstance(result, Awaitable):
+                await result
+        else:
+            awaitables = []
+            for cls in stage:
+                result = cls(agent=agent).execute(**kwargs)
+                if isinstance(result, Awaitable):
+                    awaitables.append(result)
+            if awaitables:
+                await asyncio.gather(*awaitables)
+
+    # deferred (non-blocking) extensions: schedule and register on the agent;
+    # joined at the turn barrier (join_deferred_extensions). If there is no
+    # agent to hold the registry, degrade to blocking — never drop work.
+    for cls in plan.deferred:
+        if agent is not None:
+            task = asyncio.create_task(
+                _run_deferred_extension(cls, agent=agent, **kwargs)
+            )
+            agent.data.setdefault(_DEFERRED_TASKS_KEY, []).append(task)
+        else:
+            await _run_deferred_extension(cls, agent=None, **kwargs)
+
+
+async def _run_deferred_extension(
+    cls: Type[Extension], agent: "Agent|None", **kwargs
+):
+    """Run a non-blocking extension; failures are logged, never raised."""
+    try:
         result = cls(agent=agent).execute(**kwargs)
         if isinstance(result, Awaitable):
             await result
+    except Exception as e:
+        PrintStyle.error(
+            f"Deferred extension {cls.__name__} failed: {e}"
+        )
+
+
+async def join_deferred_extensions(agent: "Agent|None"):
+    """Turn barrier: await all deferred extension tasks scheduled so far.
+
+    Called at the end of each message-loop iteration (and as a safety drain at
+    monologue end). Idempotent — draining an empty registry is a no-op. Errors
+    were already logged inside _run_deferred_extension.
+    """
+    if agent is None:
+        return
+    tasks = agent.data.pop(_DEFERRED_TASKS_KEY, None)
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _get_execution_plan(
+    extension_point: str,
+    classes: list[Type[Extension]],
+    agent: "Agent|None" = None,
+) -> ExecutionPlan:
+    cache_key = cache.determine_cache_key(agent, extension_point)
+    cached = cache.get(_PLANS_CACHE_AREA, cache_key)
+    if cached is not None:
+        return cached
+    plan = build_execution_plan(classes)
+    cache.add(_PLANS_CACHE_AREA, cache_key, plan)
+    return plan
 
 
 def call_extensions_sync(extension_point: str, agent: "Agent|None" = None, **kwargs):
@@ -331,6 +558,7 @@ def register_extensions_watchdogs():
     def extensions_changed(items: list[watchdog.WatchItem]):
         cache.clear(_EXTENSIONS_CACHE_AREA)
         cache.clear(_CLASSES_CACHE_AREA)
+        cache.clear(_PLANS_CACHE_AREA)
         PrintStyle.debug("Extensions watchdog triggered:", items)
 
     # extensions and usr/extensions

@@ -5,6 +5,8 @@ from helpers.localization import Localization
 
 
 class IncludeCurrentDatetime(Extension):
+
+    parallel = True  # writes a distinct loop_data.extras_* key; independent of siblings
     async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
         if not self.agent:
             return

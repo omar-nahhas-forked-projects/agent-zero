@@ -1,11 +1,13 @@
 from typing import Any
 
-from helpers.extension import Extension, extensible
+from helpers.extension import Extension, extensible, reserve_list_slot
 from helpers import projects
 from agent import Agent, LoopData
 
 
 class ProjectPrompt(Extension):
+
+    parallel = True  # independent of sibling prompt builders; order kept via slot
 
     async def execute(
         self,
@@ -15,9 +17,9 @@ class ProjectPrompt(Extension):
     ):
         if not self.agent:
             return
+        slot = reserve_list_slot(system_prompt)  # sync: reserve position before I/O
         prompt = await build_prompt(self.agent)
-        if prompt:
-            system_prompt.append(prompt)
+        slot.set(prompt)  # empty prompt drops the slot
 
 
 @extensible

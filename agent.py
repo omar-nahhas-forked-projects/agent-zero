@@ -520,6 +520,9 @@ class Agent:
                             await extension.call_extensions_async(
                                 "message_loop_end", self, loop_data=self.loop_data
                             )
+                        # turn barrier: join deferred (non-blocking) extensions
+                        # scheduled during this iteration
+                        await extension.join_deferred_extensions(self)
 
 
 
@@ -533,6 +536,9 @@ class Agent:
                     await extension.call_extensions_async(
                         "monologue_end", self, loop_data=self.loop_data
                     )  # type: ignore
+                # safety drain: join any deferred extensions that slipped past
+                # the per-iteration barrier (idempotent)
+                await extension.join_deferred_extensions(self)
 
     @extension.extensible
     async def prepare_prompt(self, loop_data: LoopData) -> list[BaseMessage]:
@@ -636,6 +642,8 @@ class Agent:
         await extension.call_extensions_async(
             "system_prompt", self, system_prompt=system_prompt, loop_data=loop_data
         )
+        # drop any unfilled slot markers left by parallel prompt builders
+        extension.finalize_list_slots(system_prompt)
         return system_prompt
 
     @extension.extensible
