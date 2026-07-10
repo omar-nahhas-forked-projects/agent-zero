@@ -323,38 +323,52 @@ def build_execution_plan(classes: list[Type[Extension]]) -> ExecutionPlan:
 
     names = [_get_file_from_module(cls.__module__) for cls in blocking]
     index_of = {name: i for i, name in enumerate(names)}
+    deferred_names = {_get_file_from_module(cls.__module__) for cls in deferred}
 
-    # dependency edges: deps[i] = set of blocking indices i depends on
+    # 'after' on a non-blocking extension is meaningless (deferred extensions
+    # run after the dispatch returns and are not ordered) — warn loudly
+    for cls in deferred:
+        if tuple(getattr(cls, "after", ()) or ()):
+            PrintStyle.warning(
+                f"Extension {_get_file_from_module(cls.__module__)} is blocking=False; "
+                "its after=... declaration is ignored (deferred extensions are not ordered)"
+            )
+
+    # dependency edges: deps[i] = set of blocking indices i depends on.
+    # base deps come from parallel/legacy semantics; 'after' edges are ADDITIVE
+    # (an extra constraint), never a replacement — a legacy extension adding
+    # after=... must not silently lose its serial ordering.
     deps: list[set[int]] = []
     for i, cls in enumerate(blocking):
-        after = tuple(getattr(cls, "after", ()) or ())
-        if after:
-            dep_set = set()
-            for name in after:
-                j = index_of.get(name)
-                if j is None:
+        if getattr(cls, "parallel", False):
+            # parallel: only prior NON-parallel extensions act as barriers
+            dep_set = {
+                j for j in range(i) if not getattr(blocking[j], "parallel", False)
+            }
+        else:
+            # legacy: depends on everything before it (strict filename order)
+            dep_set = set(range(i))
+
+        for name in tuple(getattr(cls, "after", ()) or ()):
+            j = index_of.get(name)
+            if j is None:
+                if name in deferred_names:
+                    PrintStyle.warning(
+                        f"Extension {names[i]} declares after={name!r}, which is "
+                        "blocking=False; a blocking extension cannot be ordered after "
+                        "a deferred one (it runs after the dispatch returns) — edge ignored"
+                    )
+                else:
                     PrintStyle.warning(
                         f"Extension {names[i]} declares after={name!r} which is not present; ignoring"
                     )
-                elif j == i:
-                    PrintStyle.warning(
-                        f"Extension {names[i]} declares after itself; ignoring"
-                    )
-                else:
-                    dep_set.add(j)
-            deps.append(dep_set)
-        elif getattr(cls, "parallel", False):
-            # parallel: only prior NON-parallel extensions act as barriers
-            deps.append(
-                {
-                    j
-                    for j in range(i)
-                    if not getattr(blocking[j], "parallel", False)
-                }
-            )
-        else:
-            # legacy: depends on everything before it (strict filename order)
-            deps.append(set(range(i)))
+            elif j == i:
+                PrintStyle.warning(
+                    f"Extension {names[i]} declares after itself; ignoring"
+                )
+            else:
+                dep_set.add(j)
+        deps.append(dep_set)
 
     # longest-path level per node (Kahn); cycle fallback = serial legacy order
     levels = [0] * len(blocking)
@@ -388,36 +402,60 @@ async def call_extensions_async(
 
     # fetch classes and the precomputed execution plan for this point
     classes = _get_extension_classes(extension_point, agent=agent, **kwargs)
-    plan = _get_execution_plan(extension_point, classes, agent=agent)
+    plan = _get_execution_plan(classes)
 
     # blocking extensions: stage by stage; one stage's extensions run
     # concurrently (they are mutually independent), stages run in order.
     for stage in plan.stages:
         if len(stage) == 1:
             # single extension — identical to the legacy serial path
-            result = stage[0](agent=agent).execute(**kwargs)
-            if isinstance(result, Awaitable):
-                await result
+            await _run_extension(stage[0], agent, **kwargs)
         else:
-            awaitables = []
-            for cls in stage:
-                result = cls(agent=agent).execute(**kwargs)
-                if isinstance(result, Awaitable):
-                    awaitables.append(result)
-            if awaitables:
-                await asyncio.gather(*awaitables)
+            # each extension runs inside its own task so that (a) sync execute
+            # bodies run in filename order within the stage (task start order
+            # == creation order) and (b) on failure no sibling is left running
+            tasks = [
+                asyncio.create_task(_run_extension(cls, agent, **kwargs))
+                for cls in stage
+            ]
+            try:
+                await asyncio.gather(*tasks)
+            except BaseException:
+                # first exception aborts the stage: cancel the remaining
+                # siblings and wait for them to settle so no stray extension
+                # keeps mutating shared state after the dispatch raised
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
 
-    # deferred (non-blocking) extensions: schedule and register on the agent;
-    # joined at the turn barrier (join_deferred_extensions). If there is no
-    # agent to hold the registry, degrade to blocking — never drop work.
-    for cls in plan.deferred:
-        if agent is not None:
-            task = asyncio.create_task(
-                _run_deferred_extension(cls, agent=agent, **kwargs)
-            )
-            agent.data.setdefault(_DEFERRED_TASKS_KEY, []).append(task)
-        else:
-            await _run_deferred_extension(cls, agent=None, **kwargs)
+    # deferred (non-blocking) extensions: while a turn is active, schedule as
+    # background tasks registered on the agent and joined at the turn barrier
+    # (join_deferred_extensions). Outside an active turn (no barrier will run:
+    # API handlers, init paths) — or with no agent at all — run inline instead;
+    # never leave an unawaited task behind. Error semantics are identical in
+    # both modes: logged, never raised.
+    if plan.deferred:
+        turn_active = (
+            agent is not None
+            and getattr(getattr(agent, "context", None), "streaming_agent", None)
+            is not None
+        )
+        for cls in plan.deferred:
+            if turn_active:
+                task = asyncio.create_task(
+                    _run_deferred_extension(cls, agent=agent, **kwargs)
+                )
+                agent.data.setdefault(_DEFERRED_TASKS_KEY, []).append(task)  # type: ignore[union-attr]
+            else:
+                await _run_deferred_extension(cls, agent=agent, **kwargs)
+
+
+async def _run_extension(cls: Type[Extension], agent: "Agent|None", **kwargs):
+    """Run one blocking extension (sync or async execute); exceptions propagate."""
+    result = cls(agent=agent).execute(**kwargs)
+    if isinstance(result, Awaitable):
+        await result
 
 
 async def _run_deferred_extension(
@@ -439,21 +477,27 @@ async def join_deferred_extensions(agent: "Agent|None"):
 
     Called at the end of each message-loop iteration (and as a safety drain at
     monologue end). Idempotent — draining an empty registry is a no-op. Errors
-    were already logged inside _run_deferred_extension.
+    were already logged inside _run_deferred_extension. If the joining task is
+    itself cancelled (user stop), the popped deferred tasks are cancelled too
+    so they can't keep running unsupervised.
     """
     if agent is None:
         return
     tasks = agent.data.pop(_DEFERRED_TASKS_KEY, None)
     if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            for t in tasks:
+                t.cancel()
+            raise
 
 
-def _get_execution_plan(
-    extension_point: str,
-    classes: list[Type[Extension]],
-    agent: "Agent|None" = None,
-) -> ExecutionPlan:
-    cache_key = cache.determine_cache_key(agent, extension_point)
+def _get_execution_plan(classes: list[Type[Extension]]) -> ExecutionPlan:
+    # keyed by the exact class tuple: the cached plan can never diverge from
+    # the freshly-fetched class list (a stale-classes plan is only ever hit by
+    # the same stale tuple, and a class-cache refresh yields a new key)
+    cache_key = tuple(classes)
     cached = cache.get(_PLANS_CACHE_AREA, cache_key)
     if cached is not None:
         return cached
@@ -468,8 +512,20 @@ def call_extensions_sync(extension_point: str, agent: "Agent|None" = None, **kwa
     # fetch classes for this extension point and agent
     classes = _get_extension_classes(extension_point, agent=agent, **kwargs)
 
-    # execute unique extensions
+    # execute unique extensions — the sync path stays strictly serial in
+    # filename order (no event loop to overlap on), but honors the
+    # blocking=False error contract: such extensions log failures, never raise
     for cls in classes:
+        if not getattr(cls, "blocking", True):
+            try:
+                result = cls(agent=agent).execute(**kwargs)
+                if isinstance(result, Awaitable):
+                    raise ValueError(
+                        f"Extension {cls.__name__} returned awaitable in sync mode"
+                    )
+            except Exception as e:
+                PrintStyle.error(f"Deferred extension {cls.__name__} failed: {e}")
+            continue
         result = cls(agent=agent).execute(**kwargs)
         if isinstance(result, Awaitable):
             raise ValueError(

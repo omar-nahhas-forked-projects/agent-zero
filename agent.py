@@ -515,14 +515,17 @@ class Agent:
                         await self.handle_exception("message_loop", e)
 
                     finally:
-                        # call message_loop_end extensions
-                        if self.context.task and self.context.task.is_alive(): # don't call extensions post mortem
-                            await extension.call_extensions_async(
-                                "message_loop_end", self, loop_data=self.loop_data
-                            )
-                        # turn barrier: join deferred (non-blocking) extensions
-                        # scheduled during this iteration
-                        await extension.join_deferred_extensions(self)
+                        try:
+                            # call message_loop_end extensions
+                            if self.context.task and self.context.task.is_alive(): # don't call extensions post mortem
+                                await extension.call_extensions_async(
+                                    "message_loop_end", self, loop_data=self.loop_data
+                                )
+                        finally:
+                            # turn barrier: join deferred (non-blocking) extensions
+                            # scheduled during this iteration — must run even if a
+                            # message_loop_end extension raised
+                            await extension.join_deferred_extensions(self)
 
 
 
@@ -531,14 +534,17 @@ class Agent:
                 await self.handle_exception("monologue", e)
             finally:
                 self.context.streaming_agent = None  # unset current streamer
-                # call monologue_end extensions
-                if self.context.task and self.context.task.is_alive(): # don't call extensions post mortem
-                    await extension.call_extensions_async(
-                        "monologue_end", self, loop_data=self.loop_data
-                    )  # type: ignore
-                # safety drain: join any deferred extensions that slipped past
-                # the per-iteration barrier (idempotent)
-                await extension.join_deferred_extensions(self)
+                try:
+                    # call monologue_end extensions
+                    if self.context.task and self.context.task.is_alive(): # don't call extensions post mortem
+                        await extension.call_extensions_async(
+                            "monologue_end", self, loop_data=self.loop_data
+                        )  # type: ignore
+                finally:
+                    # safety drain: join any deferred extensions that slipped past
+                    # the per-iteration barrier (idempotent); must run even if a
+                    # monologue_end extension raised
+                    await extension.join_deferred_extensions(self)
 
     @extension.extensible
     async def prepare_prompt(self, loop_data: LoopData) -> list[BaseMessage]:

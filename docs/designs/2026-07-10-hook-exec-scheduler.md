@@ -75,8 +75,11 @@ class Extension:
   *sibling* hooks and may run concurrently with them. **Author responsibility:** only set `parallel=True`
   when the hook's side-effects are *commutative* with its concurrent siblings (distinct keys, no shared
   ordered structure). See "Correctness rule" below.
-- **`after=(...)`:** escape hatch for an explicit dependency edge on named sibling hook(s), overriding
-  the `parallel`/legacy default for ordering. Rarely needed.
+- **`after=(...)`:** escape hatch for explicit **additional** dependency edges on named sibling
+  hook(s). It **augments** the `parallel`/legacy base dependencies, never replaces them — a legacy
+  hook adding `after` keeps its serial semantics. An `after` edge cannot target a `blocking=False`
+  sibling (deferred hooks run after the dispatch returns); such edges are dropped with a warning.
+  Rarely needed.
 
 ### Correctness rule for `parallel=True`
 
@@ -107,31 +110,42 @@ For a point's ordered class list (as `_get_extension_classes` already returns, f
   same stage are mutually independent → run concurrently. Legacy hooks (dep on all prior) each land in
   their own stage → serial, order preserved. An all-`parallel` point collapses to one stage.
 
-The `(stages, deferred)` plan is **pure** in the class list, so it is computed once and cached per
-`(agent, point)` in a new cache area, invalidated by the **same** extension watchdogs that already
-invalidate the class cache. "Execution plan calculated at the beginning of each run" = built on first
-dispatch, reused thereafter.
+The `(stages, deferred)` plan is **pure** in the class list, so it is computed once and cached
+**keyed by the exact class tuple** (not by point name) — a cached plan can therefore never diverge
+from the freshly-fetched class list, even across watchdog cache-clear races: stale classes can only
+ever hit a stale-tuple key, and a class-cache refresh produces a new key. The plan area is also
+cleared by the same extension watchdogs. "Execution plan calculated at the beginning of each run" =
+built on first dispatch, reused thereafter.
 
 ## Execution
 
 `call_extensions_async(point, agent, **kwargs)`:
 
 1. classes = cached classes for (agent, point).
-2. plan = cached plan for (agent, point).
-3. for stage in plan.stages: run every hook in the stage concurrently via `asyncio.gather(...)`;
-   await the stage before the next (respects deps). A single-hook stage is just an `await` (identical
-   to today for legacy points).
-4. for each deferred hook: `task = asyncio.create_task(_run_deferred(...))`; register the task on
-   `agent.data["_deferred_ext_tasks"]`; **do not await**. `_run_deferred` wraps `execute` in
-   try/except that logs failures (never crashes the turn).
+2. plan = cached plan for the exact class tuple.
+3. for stage in plan.stages: every hook runs inside **its own task** (`_run_extension`, created in
+   filename order — so even a plain-`def` `execute` runs at its filename position, and slot
+   reservations stay ordered); the stage is awaited before the next (respects deps). A single-hook
+   stage is a plain `await` (identical to today for legacy points).
+4. for each deferred hook: **while a turn is active** (`context.streaming_agent` set),
+   `task = asyncio.create_task(_run_deferred(...))`; register on `agent.data["_deferred_ext_tasks"]`;
+   do not await. Outside an active turn (API handlers, init paths — no barrier will run) or with no
+   agent, run inline instead — same logged-error semantics, never an unawaited task. `_run_deferred`
+   wraps `execute` in try/except that logs failures (never crashes the turn).
 5. return.
 
-**Exception semantics (blocking hooks):** unchanged in spirit — the first blocking hook to raise
-propagates out of the dispatch (as today). Within a concurrent stage, `gather` surfaces the first
-exception; siblings already started may complete. Documented; native concurrent stages are pure/independent.
+**Exception semantics (blocking hooks):** the first hook to raise propagates out of the dispatch (as
+today). Within a concurrent stage, the first exception **cancels the remaining sibling tasks and
+awaits them settle** before propagating — no stray hook keeps mutating shared state after the
+dispatch raised.
 
-**Fallbacks:** if `agent is None` (no registry to hold deferred tasks) or no running loop, deferred
-hooks are awaited inline (degrade to blocking) — never dropped.
+**Sync dispatch (`call_extensions_sync`):** stays strictly serial, but honors the `blocking=False`
+error contract (failures logged, not raised) so an extension has the same error semantics on both
+dispatch paths.
+
+**Fallbacks:** if `agent is None`, no turn is active, or there is no running loop, deferred hooks are
+awaited inline (degrade to blocking) — never dropped. If the barrier join is itself cancelled (user
+stop), the popped deferred tasks are cancelled with it.
 
 ## Turn barrier (deferred join)
 
